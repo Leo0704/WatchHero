@@ -20,7 +20,7 @@
 - Electron 提供跨平台桌面能力和本地数据存储
 - Next.js (App Router) 提供 UI 组件和状态管理，虽有 SSR 冗余但与 Electron 集成成熟
 - 替代方案（如 electron-vite + React Router）更轻量，但 Next.js 的组件生态和 Zustand 集成成熟
-- 若未来需要 SSR（如 Web 版本），Next.js 可直接迁移
+SSR（如 Web 版本）不在本项目范围内
 
 **目标平台**: macOS + Windows（跨平台，Electron 实现）
 
@@ -74,7 +74,6 @@
 
 **情绪类**:
 
-- **Fear & Greed Index（情绪指数）**：Fear & Greed > 75（极度贪婪）、Fear & Greed < 25（极度恐惧）、Fear & Greed 由恐惧转贪婪、Fear & Greed 由贪婪转恐惧、Fear & Greed 突破均值、Fear & Greed 创N周期新高/新低（共6个，暂不支持，后续可接入第三方 API）
 - **Funding Rate（资金费率）**：Funding Rate > 0（多头支付）、Funding Rate < 0（空头支付）、Funding Rate 突破正向阈值、Funding Rate 突破负向阈值、Funding Rate 由正转负、Funding Rate 由负转正、Funding Rate 创N周期新高、Funding Rate 创N周期新低（共8个）
 - **Open Interest（未平仓合约）**：Open Interest 创N周期新高、Open Interest 创N周期新低、Open Interest 与价格底背离、Open Interest 与价格顶背离、Open Interest 上升 + 价格上升、Open Interest 上升 + 价格下跌、Open Interest 下降 + 价格上升、Open Interest 下降 + 价格下跌（共8个）
 - **Long/Short Ratio（多空比）**：多空比 > 1（多头占优）、多空比 < 1（空头占优）、多空比突破均值、多空比创N周期新高、多空比创N周期新低、多空比与价格底背离、多空比与价格顶背离、多空比极端值预警（>3或<0.33）（共8个）
@@ -297,7 +296,23 @@ class GlobalRateLimiter {
 - 止盈：按开仓价计算，固定百分比（默认 +4%，用户可调）。使用 bar 内 high/low 检查是否触发；触发时成交价按止盈价（模拟日内极端价格穿透后成交）。
   - 做多持仓：bar.high >= 止盈价 → 止盈平仓（止盈价 = entry_price * (1 + take_profit_pct)）
   - 做空持仓：bar.low <= 止盈价 → 止盈平仓（止盈价 = entry_price * (1 - take_profit_pct)）
-- 移动止损：止盈触发后启用，做多追踪持仓期内最高价，做空追踪最低价，回落 N% 出（默认 1%，用户可调）。成交价按触发价（做多：highest * (1 - trailing_stop_pct)；做空：lowest * (1 + trailing_stop_pct)）
+- 移动止损：止盈触发后启用，追踪持仓期内最高价/最低价，回落 N% 出（默认 1%，用户可调）
+
+  **模式 A（默认，移动止损激活后不再回补）**:
+  - 止盈触发 → 移动止损激活，trailing_stop_activated = true，highest/lowest = 止盈触发时的价格
+  - 移动止损触发条件：做多时 bar.low <= highest * (1 - trailing_stop_pct)，做空时 bar.high >= lowest * (1 + trailing_stop_pct)
+  - 移动止损触发后退出，trailing_stop_activated 重置为 false
+  - 激活后即使价格重新回升也不再重新激活
+
+  **模式 B（移动止损激活后若价格继续朝有利方向移动，可重新激活）**:
+  - 止盈触发 → 移动止损激活，trailing_stop_activated = true，highest/lowest = 止盈触发时的价格
+  - 每次 bar 收盘后更新 highest/lowest（仅在止盈未触发的前提下）
+  - 移动止损触发条件同模式 A
+  - 移动止损触发后退出，但若后续价格继续朝有利方向移动，可在下一 bar 重新激活
+
+  **成交价计算**:
+  - 做多：exit_price = highest * (1 - trailing_stop_pct)，成交价 = min(exit_price, bar[t].open * (1 - slippage))
+  - 做空：exit_price = lowest * (1 + trailing_stop_pct)，成交价 = max(exit_price, bar[t].open * (1 + slippage))
 
 **滑点**: 固定 0.05%（用户可调）
 
@@ -476,191 +491,7 @@ cacheKey = SHA256(`${symbol}:${timeframe}:${indicatorType}:${paramsHash}`)
 
 ---
 
-### 7. 其他
-
-**界面**: 暗色模式（前端决定）
-
-**应用窗口**: 单窗口 + 标签页切换（跨平台桌面应用常见模式）
-
-**新手引导**: 可跳过的引导流程
-
-**自动更新**:
-- 使用 `electron-updater` + GitHub Releases
-- 检查频率：应用启动时检查 + 每 6 小时轮询
-- 更新包格式：`.zip`（便于差分更新），通过 `nsis-diff` 或 `zip-diff` 实现增量更新
-- 更新流程：下载 → 验证签名 → 解压 → 下次启动应用时自动替换（`electron-updater` 自动处理）
-- 更新失败回滚：启动时检测上一版本备份（`{userData}/backups/`），若更新后应用损坏自动回滚
-
-**异常恢复**: 检测到异常退出时，提示用户是否恢复状态
-
-**日志**: 错误日志记录（普通用户无需关注）
-
-**声音**: 信号触发时系统提示音
-
-**主题**: 单主题（前端决定）
-
----
-
-### 8. 错误处理与日志
-
-**错误码体系**:
-
-| 错误码 | 范围 | 说明 |
-|--------|------|------|
-| E1xx | 网络 | E101 连接超时, E102 DNS 解析失败, E103 SSL 错误, E104 连接被拒绝 |
-| E2xx | 数据 | E201 K线数据缺失, E202 数据格式异常, E203 数据过期 |
-| E3xx | 策略 | E301 条件验证失败, E302 指标计算错误, E303 参数越界 |
-| E4xx | 推送 | E401 Telegram 推送失败, E402 Bot Token 无效, E403 Chat ID 无效 |
-| E5xx | 回测 | E501 回测数据不足, E502 回测计算异常, E503 参数优化超时 |
-| E6xx | 系统 | E601 数据库损坏, E602 内存不足, E603 磁盘空间不足, E604 应用崩溃 |
-
-**日志分级**: Warning + Error
-
-**日志查看**: 分级查看（Error/Warning 分开）+ 日志轮转
-
-**日志保留**: 30 天 + 100MB 双重限制
-
-**日志位置**: `{userData}/logs/`
-
-**渲染进程错误处理**:
-```typescript
-// React Error Boundary 组件
-class ErrorBoundary extends Component {
-  state = { hasError: boolean; error: Error | null };
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error, info) {
-    logError('E604', error.message, { componentStack: info.componentStack });
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return <ErrorFallback error={this.state.error} />;
-    }
-    return this.props.children;
-  }
-}
-```
-
-**磁盘空间预检查**:
-- 全量下载 K 线前检查剩余磁盘空间
-- 最低要求: 剩余空间 > 预估所需空间 × 1.5
-- 空间不足时提示用户清理或调整保留天数
-
-**网络错误展示**: 错误码 + 中文描述 + 操作建议
-
-**WebSocket 断线**: 显示重连状态 + 重连次数 + 最终结果
-
-**API 请求超时**: toast 提示"请求超时，正在重试..."（静默重试 3 次，全部失败后弹出确认框）
-
-**API 限流**: 自动排队处理，等待超过 30 秒时显示倒计时提示
-
-**数据下载失败**: 显示具体失败原因 + 提供手动重试按钮
-
-**回测计算出错**: 显示错误码 + 错误步骤 + 错误数据行 + 可选跳过继续计算
-
-**参数优化出错**: 自动跳过出错组合 + 记录错误 + 完成全部后显示汇总（含出错数量）
-
-**Telegram 推送失败**: 静默重试 3 次（5s → 10s → 20s 指数退避），3 次失败后应用内提示「可重新推送」
-
-**策略验证失败**: 保存时自动验证 + 失败提示具体错误 + 提供修复建议
-
-**告警触发失败**: 应用内提示 + 自动重试 + 记录重试结果
-
-**危险操作**: 二次确认 + 30 秒内可撤销（仅限删除策略、删除监控任务、删除监控对象）
-
-**系统托盘**: 最小化到托盘持续运行
-- 单击托盘图标：显示菜单（暂停所有任务/恢复所有任务/打开窗口/退出）
-- 双击托盘图标：恢复主窗口
-
-**应用崩溃**: 自动生成错误报告 + 下次启动时询问是否查看/发送
-
-**内存不足**: 提示用户关闭其他应用 + 自动降低并发数
-
-**数据库损坏**: 自动尝试备份恢复 + 失败后提示 + 提供导出剩余数据和重置选项
-
----
-
-### 9. 部署与打包
-
-**打包目标**:
-- macOS: `.dmg` 安装包（Apple Silicon + Intel 通用）
-- Windows: `.exe` (NSIS installer)
-
-**macOS 签名与公证**:
-- 使用 Apple Developer ID 证书签名（`electron-builder` 的 `mac.sign` 配置）
-- 签名后通过 `afterSign` hook 自动提交 Apple 公证（Notarization）
-- 开发阶段使用 ad-hoc 签名（跳过公证），不适用于正式分发
-
-**Windows 签名**:
-- 使用代码签名证书（EV 或 OV 证书）进行签名（`electron-builder` 的 `win.sign` 配置）
-- 正式分发必须签名（Windows SmartScreen 会拦截未签名应用）
-- 开发阶段跳过签名
-
-**electron-builder 关键配置**:
-- `npmRebuild: false`（使用预编译的 native 模块，不重新编译）
-- 移除 `node_modules` 中不必要的 `.ts`、`.md`、类型声明文件
-- 最终安装包开启压缩
-
-**安装包体积优化**:
-- pnpm + Tree Shaking：确保生产构建时去除未使用代码
-- 图表库按需引入（`lightweight-charts` 只 import 需要的模块）
-- native 模块（`better-sqlite3`）使用 `@electron/rebuild` 预编译，避免运行时重复编译
-
-**分发渠道**: GitHub Releases（托管更新包 + release notes）
-
----
-
-### 10. 数据备份与恢复
-
-**自动备份**:
-- 触发时机：每周日凌晨 3:00（系统空闲时）
-- 备份文件命名：`backup_YYYYMMDD_HHmmss.db`
-- 存储路径：`{userData}/backups/`
-- 保留策略：自动保留最近 4 周备份，超期自动删除；手动备份不自动清理
-
-**备份内容**: 完整 SQLite 数据库文件（含策略、任务、信号、回测历史、K 线缓存、指标缓存）
-
-**灾难恢复**:
-- 设置页提供「从备份恢复」入口
-- 用户选择备份文件后执行 `sqlite3 .restore` 恢复
-- 恢复后自动重启应用并验证数据一致性
-- 恢复失败时保留原数据库，提示用户手动处理
-
-**数据迁移工具**:
-- 设置页提供「导出全部数据」：导出为单个 JSON 文件（含策略、任务、设置、回测历史，不含 K 线缓存）
-- 设置页提供「导入全部数据」：导入时校验 schema 版本，提示兼容性信息
-- 导入导出文件命名：`盯盘侠数据_YYYYMMDD.json`
-
-**应用版本升级（数据迁移）**:
-- 启动时检测 `app_settings.db_version` 与代码期望版本是否一致
-- 不一致时弹出确认框告知用户需要迁移，征得同意后执行迁移脚本
-- 迁移失败时保留原数据库，提示用户手动处理或联系支持
-
----
-
-### 11. 法律与合规
-
-**用户协议与隐私政策**:
-- 首次启动时展示，用户必须点击「同意」才能继续使用
-- 协议内容要点：
-  - 所有数据存储在用户本地设备，应用不收集任何个人信息
-  - 应用不接入任何追踪服务（无埋点、无 analytics）
-  - 市场数据来源于币安公开 API，数据归属权归币安所有
-  - 历史回测结果仅供参考，不代表未来收益表现
-  - 投资有风险，使用本应用造成的任何损失由用户自行承担
-
-**风险提示**:
-- 策略创建页、回测页、参数优化页底部添加固定提示语：「历史回测结果仅供参考，不代表未来收益。投资有风险，请谨慎决策。」
-
-**数据来源声明**: 应用内关于页面注明「数据来源：币安」，界面上实时价格标注「数据来源：币安」
-
----
-
-### 12. 第三方服务容灾
+### 7. 第三方服务容灾
 
 **币安 API**:
 - 全部通过 ccxt 处理限流（自动排队 + 请求权重控制）
@@ -675,7 +506,7 @@ class ErrorBoundary extends Component {
 
 ---
 
-### 13. 性能监控（轻量实现）
+### 8. 性能监控（轻量实现）
 
 **MVP 指标采集**:
 - 应用启动时间：记录从进程启动到首屏渲染完成的耗时
@@ -688,7 +519,7 @@ class ErrorBoundary extends Component {
 
 ---
 
-### 14. 可访问性（基础保证）
+### 9. 可访问性（基础保证）
 
 **MVP 保证**:
 - 所有交互元素可通过键盘完全操作（Tab 切换焦点，Enter 确认，Esc 取消）
@@ -708,14 +539,14 @@ class ErrorBoundary extends Component {
 
 **自动化测试**: `axe-core` 集成到 CI，每次 PR 自动运行可访问性检查
 
-**高对比度主题**: v1.1 再实现，MVP 只提供默认暗色主题
+**高对比度主题**: 不属于 MVP 范围
 
 ---
 
-### 15. 国际化（架构预留，v1.1 实现）
+### 10. 国际化（不属于 MVP 范围）
 
 **架构**:
-- 使用 `next-intl` 或 `react-intl`
+- 使用 `next-intl`（技术选型已确定）
 - 翻译文件目录：`src/locales/{lang}/`（如 `src/locales/zh/`、`src/locales/en/`）
 - 翻译 key 格式：`module.section.message`（如 `strategy.builder.save`）
 
@@ -725,11 +556,11 @@ class ErrorBoundary extends Component {
 
 **日期、数字格式化**: 统一使用 `Intl.DateTimeFormat` 和 `Intl.NumberFormat`，封装为 `src/lib/format.ts` 工具函数，全应用调用统一入口
 
-**语言支持**: v1.0 只提供简体中文，v1.1 再支持英文及扩展
+**语言支持**: v1.0 只提供简体中文
 
 ---
 
-### 16. 测试与质量保证
+### 11. 测试与质量保证
 
 **单元测试**:
 - 框架：`Vitest`（与 Vite 集成，速度快）
@@ -806,6 +637,78 @@ class ErrorBoundary extends Component {
 | i18n | next-intl | App Router 原生支持、tree-shakable |
 | 自动更新 | electron-updater | 与 GitHub Releases 无缝集成 |
 
+**package.json 关键依赖版本锁定**:
+```json
+{
+  "name": "dingpanxia",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "electron": "^28.0.0",
+    "next": "14.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.5.0",
+    "better-sqlite3": "^9.4.0",
+    "ccxt": "^4.2.0",
+    "lightweight-charts": "^4.1.0",
+    "electron-updater": "^6.1.0",
+    "zod": "^3.22.0",
+    "immer": "^10.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.9.0",
+    "@electron/rebuild": "^3.6.0",
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0",
+    "playwright": "^1.40.0"
+  },
+  "build": {
+    "appId": "com.dingpanxia.app",
+    "productName": "盯盘侠",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.js"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.finance"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
+```
+
+**版本兼容性说明**:
+- `electron`: 需与 `electron-builder` 和 `@electron/rebuild` 版本匹配
+- `next`: 14.2+ 支持 App Router 和静态导出 (`output: 'export'`)
+- `better-sqlite3`: native 模块，需在构建后重新编译 (`npm rebuild`)
+- `ccxt`: 4.2+ 版本稳定，支持币安 USDT 永续合约接口
+- `lightweight-charts`: 4.1+ 支持 TradingView 高级功能
+
 ---
 
 ## 项目结构
@@ -881,6 +784,17 @@ class ErrorBoundary extends Component {
 │   │   ├── monitor-store.ts     # 监控任务、实时价格、信号
 │   │   ├── backtest-store.ts    # 回测状态、结果数据
 │   │   └── settings-store.ts    # 应用设置、Telegram 配置
+│   │
+│   │   **Zustand 持久化策略**:
+│   │   - 使用 `zustand/middleware` 的 `persist` 中间件
+│   │   - 存储介质: `electron-store`（JSON 文件，存于 `{userData}/store/`）
+│   │   - 注意: 不使用 `localStorage`，Electron 渲染进程中 localStorage 在多窗口场景下不可靠
+│   │   - 各 store 持久化范围:
+│   │     - `strategy-store`: 草稿策略（未保存的编辑状态）、UI 偏好（如折叠面板状态）
+│   │     - `monitor-store`: 非持久化（实时状态由主进程管理）
+│   │     - `backtest-store`: 回测进度（断点续传）、历史筛选偏好
+│   │     - `settings-store`: 应用设置（主题、语言、通知开关等）
+│   │   - 敏感配置（Telegram Token）: 不在前端 store 持久化，由主进程加密存储
 │   ├── lib/
 │   │   ├── api.ts               # IPC 调用封装（前端统一入口）
 │   │   ├── indicators.ts        # 指标元数据定义（名称、参数、预设条件映射）
@@ -898,11 +812,11 @@ class ErrorBoundary extends Component {
 │       ├── monitor-mock.ts      # 监控任务（定时器模拟实时数据）
 │       ├── backtest-mock.ts     # 回测（预设数据 + 模拟延迟）
 │       └── data/                # mock 数据（策略示例、K线数据、信号样例）
-├── src/locales/                 # 国际化资源（v1.1 实现）
+├── src/locales/                 # 国际化资源（不属于 MVP）
 │   └── zh/                      # 简体中文翻译
 │       └── messages.json
-# 注: 若使用 next-intl App Router 版，messages 建议放 messages/ 目录下
-# 而非 src/locales/，以配合 next-intl 的文件路由约定
+# next-intl App Router 版：翻译文件放 `messages/` 目录下（非 src/locales/），
+# 配合 next-intl 文件路由约定
 ├── tests/                       # 测试文件
 │   ├── unit/                   # 单元测试（Vitest）
 │   ├── integration/            # 集成测试
@@ -917,10 +831,65 @@ class ErrorBoundary extends Component {
 **next.config.js 优化**:
 ```javascript
 // next.config.js
-output: 'export'  // 静态导出，剥离 Node.js 服务端
-                  // Electron 直接加载静态文件，无需 Next.js 服务器
-                  // 注意: 不兼容 API Routes，如有用到需移除
+const nextConfig = {
+  output: 'export',           // 静态导出，剥离 Node.js 服务端
+  distDir: 'out',
+};
 ```
+
+**动态路由兼容方案**: 采用 Hash Router
+
+Next.js 静态导出不支持 `[id]` 动态路由（静态文件服务无法解析路径参数）。本项目采用 Hash Router 方案：
+
+```typescript
+// src/lib/router.ts
+// 自定义 Hash Router，基于 URL hash 进行页面导航
+// 路由格式: /#/strategy?id=123
+
+type Route =
+  | { page: 'home' }
+  | { page: 'strategies' }
+  | { page: 'strategy-edit'; id?: string }   // id 通过 searchParams 传递
+  | { page: 'monitor' }
+  | { page: 'backtest' }
+  | { page: 'settings' };
+
+function parseRoute(hash: string): Route {
+  const [path, search] = hash.replace('#', '').split('?');
+  const params = new URLSearchParams(search || '');
+
+  switch (path) {
+    case '/strategies':
+      return { page: 'strategies' };
+    case '/strategy':
+      return { page: 'strategy-edit', id: params.get('id') || undefined };
+    case '/monitor':
+      return { page: 'monitor' };
+    case '/backtest':
+      return { page: 'backtest' };
+    case '/settings':
+      return { page: 'settings' };
+    default:
+      return { page: 'home' };
+  }
+}
+
+// 使用 react-router-dom 的 HashRouter 替代 BrowserRouter
+// <HashRouter baseName="/">
+```
+
+**页面组件映射**:
+```
+/                   → HomePage
+/#/strategies       → StrategiesPage
+/#/strategy?id=     → StrategyEditPage (新建)
+/#/strategy?id=123  → StrategyEditPage (编辑策略 123)
+/#/monitor          → MonitorPage
+/#/backtest         → BacktestPage
+/#/settings         → SettingsPage
+```
+
+**Electron 中加载静态文件**: 无需自定义服务器，直接用 `file://` 协议加载 `out/index.html`，Hash Router 在前端解析，不依赖服务器路由。
 
 ## 指标计算模块
 
@@ -999,7 +968,7 @@ SMA(close, period) = Sum(close[i], i=0 to period-1) / period
 // 初始值（前 period 根 K 线使用 SMA）
 EMA[period] = SMA(close[0..period-1], period)
 
-// 后续使用 EMA 公式
+// 使用 EMA 公式
 EMA[t] = α * close[t] + (1 - α) * EMA[t-1]
 
 // 或者使用迭代形式:
@@ -1106,7 +1075,7 @@ loss[t] = close[t] < close[t-1] ? close[t-1] - close[t] : 0
 avgGain[period] = Sum(gain[1..period]) / period  // 初始值使用 SMA
 avgLoss[period] = Sum(loss[1..period]) / period
 
-// 后续使用 Wilder 平滑
+// Wilder 平滑（从第二期开始）
 avgGain[t] = (prev_avgGain * (period - 1) + gain[t]) / period
 avgLoss[t] = (prev_avgLoss * (period - 1) + loss[t]) / period
 
@@ -1227,6 +1196,25 @@ StdDev(close, period) = sqrt(Sum((close[i] - SMA(close, period))^2, i=0 to perio
 - **参数**: `period` (默认: 20)
 - **输出**: 单值
 
+##### Historical Volatility（历史波动率）
+```
+// 对数收益率
+log_return[t] = ln(close[t] / close[t-1])
+
+// 历史波动率（年化）
+HV = StdDev(log_return[1..period]) * sqrt(365)
+  = sqrt(Sum((log_return[i] - mean(log_return))^2, i=1 to period) / period) * sqrt(365)
+
+// 等效表达: HV = sqrt(Sum(log_return[i]^2, i=1 to period) / period - mean(log_return)^2) * sqrt(365)
+// 注: 当 period=20 时，结果约为日波动率的 sqrt(365) 倍（即年化）
+```
+- **参数**: `period` (默认: 20，统计收益率天数)
+- **输出**: 单值（年化波动率，如 0.5 表示 50% 年化波动率）
+- **注意**:
+  - 使用对数收益率而非简单收益率，因为对数收益率在跨时间累加时数学性质更优
+  - 分母用 period 而非 period-1（总体标准差），与金融业界惯例一致
+  - 年化因子使用 365（数字货币市场无休），也可选 252（交易日）
+
 #### 5. 成交量类 (Volume)
 
 ##### OBV（能量潮）
@@ -1267,8 +1255,6 @@ CMF[t] = SMA(MF, period) / SMA(volume, period)
 ```
 - **参数**: `period` (默认: 20)
 - **输出**: 单值 (-1 到 +1)
-- **参数**: `period` (默认: 20)
-- **输出**: 单值 (-1 到 +1)
 
 ##### Volume（成交量）
 ```
@@ -1281,6 +1267,161 @@ volume_change[t] = 100 * (volume[t] - volume[t-1]) / volume[t-1]
 ```
 - **参数**: `period` (默认: 20)
 - **输出**: `{ ratio: number, change: number }`
+
+#### 6. 支撑阻力类 (Support/Resistance)
+
+##### Pivot Points（轴心点）
+
+轴心点是一组常用的支撑阻力位，通过前一周期的高/低/收盘价计算。
+
+**标准轴心点（Classic）**:
+```
+P = (high + low + close) / 3          // 轴心点
+
+R1 = P * 2 - low                      // 第一阻力
+R2 = P + (high - low)                 // 第二阻力
+R3 = P * 2 + (high - low * 2)         // 第三阻力（扩展）
+
+S1 = P * 2 - high                     // 第一支撑
+S2 = P - (high - low)                 // 第二支撑
+S3 = P * 2 - (high * 2 - low)         // 第三支撑（扩展）
+```
+
+**Fibonacci 轴心点**:
+```
+P = (high + low + close) / 3
+
+R1 = P + (high - low) * 0.382
+R2 = P + (high - low) * 0.618
+R3 = P + (high - low) * 1.000
+
+S1 = P - (high - low) * 0.382
+S2 = P - (high - low) * 0.618
+S3 = P - (high - low) * 1.000
+```
+
+**Camarilla 轴心点**:
+```
+P = (high + low + close) / 3
+
+R1 = close + (high - low) * 1.1 / 12
+R2 = close + (high - low) * 1.1 / 6
+R3 = close + (high - low) * 1.1 / 4
+R4 = close + (high - low) * 1.1 / 2
+
+S1 = close - (high - low) * 1.1 / 12
+S2 = close - (high - low) * 1.1 / 6
+S3 = close - (high - low) * 1.1 / 4
+S4 = close - (high - low) * 1.1 / 2
+```
+
+- **参数**:
+  - `variant`: 'classic' | 'fibonacci' | 'camarilla' (默认: 'classic')
+  - `period`: 用于计算的高/低/收盘来源周期 (默认: '1d'，即日线级别轴心点)
+- **输出**: `{ pivot: number, resistance: [R1, R2, R3], support: [S1, S2, S3] }`
+- **预设条件映射**:
+  - 价格上穿 P → `close > pivot && prev_close <= pivot`
+  - 价格在 R1 与 S1 之间震荡 → `close < pivot && close > S1`
+  - 价格突破 R2 → `close > R2 && prev_close <= R2`
+
+##### Fibonacci Retracement（斐波那契回撤）
+
+用于识别潜在的支撑阻力位，基于波段高低点的回撤比例。
+
+```
+// 上涨波段（低点 → 高点）
+diff = high - low
+R1 = low + diff * 0.236
+R2 = low + diff * 0.382
+R3 = low + diff * 0.500
+R4 = low + diff * 0.618
+R5 = low + diff * 0.786
+
+// 下跌波段（高点 → 低点）
+diff = high - low
+S1 = high - diff * 0.236
+S2 = high - diff * 0.382
+S3 = high - diff * 0.500
+S4 = high - diff * 0.618
+S5 = high - diff * 0.786
+```
+
+- **参数**:
+  - `swing_period`: 用于确定波段高低点的回溯周期 (默认: 20 根 K 线)
+  - `levels`: 斐波那契比率数组 (默认: [0.236, 0.382, 0.5, 0.618, 0.786])
+- **输出**: `{ direction: 'up' | 'down', levels: Array<{ ratio: number, price: number }> }`
+- **预设条件映射**:
+  - 价格触及某斐波那契位 → `Math.abs(close - level_price) < tolerance * level_price`
+  - 价格上穿某位 → `close > level_price && prev_close <= level_price`
+
+##### Price Level（价位标记）
+
+用户手动设置的固定价位，用于提醒或触发信号。
+
+```
+// 价位标记本身无计算公式，仅为用户输入的固定价格
+price_levels = [
+  { id: string, price: number, label?: string }
+]
+
+// 价格与价位的比较
+distance = (close - level.price) / level.price  // 距价位百分比
+is_touched = Math.abs(close - level.price) <= level.price * tolerance  // tolerance 默认 0.001 (0.1%)
+```
+
+- **参数**:
+  - `levels`: 用户配置的价位数组 `Array<{ price: number; tolerance?: number }>`
+  - `tolerance`: 容差比例 (默认: 0.001，即 ±0.1%)
+- **输出**: `Array<{ price: number; distance: number; is_touched: boolean }>`
+- **预设条件映射**:
+  - 价格触及价位 → `is_touched`
+  - 价格上穿价位 → `close > price && prev_close <= price`
+
+##### 情绪类数据源说明
+
+以下指标数据来自币安 USDT 先货 /fapi 接口，需通过 ccxt 调用：
+
+| 指标 | ccxt 方法 | 币安接口 | 限流策略 |
+|------|-----------|----------|----------|
+| Funding Rate | `exchange.fetch_funding_rate(symbol)` | `GET /fapi/v1/fundingRate` | 每分钟最多 1200 请求 |
+| Open Interest | `exchange.fetch_open_interest(symbol)` | `GET /fapi/v1/openInterest` | 每分钟最多 1200 请求 |
+| Long/Short Ratio | `exchange.publicGetLongShortAccountRatio()` | `GET /fapi/v1/longShortAccountRatio` | 每分钟最多 200 请求 |
+| Liquidation | `exchange.fetch_liquidations` | `GET /fapi/v1/allForceOrders` | 每分钟最多 200 请求 |
+
+**数据获取策略**:
+- 情绪数据刷新频率：正常状态每 5 分钟一次， Funding Rate 更新周期为 8 小时
+- 缓存策略：情绪数据本地缓存，冷却时间内不重复请求
+- 限流降级：当检测到限流时，自动延长缓存时间为原来的 2 倍
+- ccxt 已封装限流逻辑，但需注意同一 IP 对币安的总限流（1200 requests/min）
+
+**Fear & Greed Index**:
+
+数据源: `https://api.alternative.me/fng/`（alternative.me 提供，无需 API Key）
+
+计算公式:
+```
+Fear & Greed Index = 0 ~ 100 数值
+- 0-25: 极度恐惧（Extreme Fear）
+- 25-45: 恐惧（Fear）
+- 45-55: 中性（Neutral）
+- 55-75: 贪婪（Greed）
+- 75-100: 极度贪婪（Extreme Greed）
+
+// 数值 = 100 - (bullish_percentage * 100)
+// 其中 bullish_percentage 来自市场 sentiment 调查汇总
+```
+
+预设条件（共6个）:
+- Fear & Greed > 75（极度贪婪）：做空信号
+- Fear & Greed < 25（极度恐惧）：做多信号
+- Fear & Greed 由恐惧转贪婪（从 <45 跃升至 >55）：趋势转多信号
+- Fear & Greed 由贪婪转恐惧（从 >55 跃升至 <45）：趋势转空信号
+- Fear & Greed 突破均值（当前值 > 过去 30 日均值）：趋势强化信号
+- Fear & Greed 创N周期新高/新低：极端情绪确认信号
+
+获取频率: 每日 UTC 0 点更新，无需频繁请求，本地缓存 24 小时
+
+**注意**: 不属于 MVP 范围，预设条件中 `enabled: false`，代码实现后移除禁用标记
 
 ### 背离计算
 
@@ -1566,7 +1707,7 @@ Binance API 格式:    同内部格式      例: BTCUSDT (直接使用)
 - 数据库读取 → 内部格式 (BTCUSDT) → UI 显示 (BTC/USDT)
 - API 调用 → 直接使用内部格式 (BTCUSDT)
 
-验证正则: /^BTCUSDT|ETHUSDT|SOLUSDT|...$/ (白名单或通用 /^([A-Z]+)(USDT|USDC)$/)
+验证正则: `/^([A-Z]+)(USDT|USDC)$/` （通用正则，支持所有币安 USDT/USDC 交易对）
 ```
 - 统一使用 `BTCUSDT` 格式存储，UI 层负责展示时添加 `/`
 
@@ -1626,6 +1767,7 @@ CREATE INDEX idx_strategies_deleted ON strategies(deleted_at);
 CREATE TABLE monitor_tasks (
   id TEXT PRIMARY KEY,
   strategy_id TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,                       -- 冗余存储，策略删除后仍可显示名称
   strategy_snapshot TEXT NOT NULL,                   -- JSON: 创建时复制的策略配置快照
   status TEXT NOT NULL DEFAULT 'stopped' CHECK(status IN ('running', 'paused', 'stopped')),
   symbols TEXT NOT NULL,                             -- JSON array
@@ -1665,9 +1807,10 @@ CREATE INDEX idx_signal_time ON signal_records(triggered_at);
 CREATE TABLE alerts (
   id TEXT PRIMARY KEY,
   symbol TEXT NOT NULL,
-  condition TEXT NOT NULL,                           -- JSON: 单个条件定义
+  condition TEXT NOT NULL,                           -- JSON: AlertCondition 结构
   is_active INTEGER DEFAULT 1,
   last_triggered_at TEXT,
+  cooldown_seconds INTEGER DEFAULT 60,              -- 触发冷却时间（避免重复告警）
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -1678,6 +1821,27 @@ CREATE TABLE alert_records (
   triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (alert_id) REFERENCES alerts(id)
 );
+
+**AlertCondition 结构**:
+```typescript
+interface AlertCondition {
+  type: 'price' | 'indicator';                      // 告警类型
+  // price 类型
+  operator?: '>' | '<' | '>=' | '<=';              // 比较运算符
+  targetPrice?: number;                              // 目标价格
+  // indicator 类型
+  indicator?: IndicatorType;
+  preset?: string;                                  // 预设条件 ID
+  params?: Record<string, number>;                  // 指标参数
+  threshold?: number;                               // 阈值
+}
+```
+
+**告警触发行为**:
+- 条件满足时：系统通知（系统级通知 + 可选 Telegram）
+- 记录到 alert_records（存储触发价格和时间）
+- 冷却时间内不重复告警（cooldown_seconds）
+- 告警触发不执行任何交易操作（仅通知）
 
 -- ============================
 -- 回测结果
@@ -1691,9 +1855,10 @@ CREATE TABLE backtest_results (
   timeframe TEXT NOT NULL,
   start_date TEXT NOT NULL,
   end_date TEXT NOT NULL,
+  initial_capital REAL DEFAULT 10000.0,            -- 初始资金（默认 10000 USDT）
   fee_rate REAL DEFAULT 0.001,                    -- 小数: 0.001 = 0.1%
   slippage REAL DEFAULT 0.0005,                  -- 小数: 0.0005 = 0.05%
-  position_pct REAL DEFAULT 0.1,                 -- 小数: 0.1 = 10%
+  position_pct REAL DEFAULT 0.1,                   -- 小数: 0.1 = 10%，基于 initial_capital 的固定比例（非复利）
   stop_loss_pct REAL DEFAULT 0.02,               -- 小数: 0.02 = 2%
   take_profit_pct REAL DEFAULT 0.04,             -- 小数: 0.04 = 4%
   trailing_stop_pct REAL DEFAULT 0.01,
@@ -1750,6 +1915,52 @@ CREATE TABLE kline_sync_status (
 -- 如需持久化缓存以支持进程恢复，需自行扩展此表
 
 -- ============================
+-- 参数优化
+-- ============================
+
+CREATE TABLE optimization_runs (
+  id TEXT PRIMARY KEY,
+  strategy_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  timeframe TEXT NOT NULL,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  parameter_grid TEXT NOT NULL,                    -- JSON: 参数网格定义
+  metric TEXT NOT NULL,                            -- 评判指标: 'total_return' | 'annualized_return' | 'sharpe_ratio' | 'max_drawdown' | 'profit_factor'
+  status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'cancelled', 'failed')),
+  total_combinations INTEGER NOT NULL,             -- 总参数组合数
+  completed_combinations INTEGER DEFAULT 0,        -- 已完成组合数
+  best_result_id TEXT,                             -- 指向 optimization_results.best_result_id
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT,
+  FOREIGN KEY (strategy_id) REFERENCES strategies(id)
+);
+
+CREATE INDEX idx_optimization_strategy ON optimization_runs(strategy_id);
+CREATE INDEX idx_optimization_status ON optimization_runs(status);
+
+CREATE TABLE optimization_results (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  parameters TEXT NOT NULL,                         -- JSON: 此组合的具体参数值
+  backtest_result TEXT NOT NULL,                   -- JSON: 完整回测结果（包含所有指标）
+  total_return REAL NOT NULL,
+  annualized_return REAL,
+  sharpe_ratio REAL,
+  max_drawdown REAL,
+  profit_factor REAL,
+  win_rate REAL,
+  trade_count INTEGER,
+  rank INTEGER,                                    -- 按 metric 排名（1 = 最佳）
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (run_id) REFERENCES optimization_runs(id)
+);
+
+CREATE INDEX idx_result_run ON optimization_results(run_id);
+CREATE INDEX idx_result_rank ON optimization_results(run_id, rank);
+
+-- ============================
 -- 应用设置
 -- ============================
 
@@ -1759,13 +1970,14 @@ CREATE TABLE app_settings (
 );
 
 -- 预置设置项:
--- telegram_bot_token  | string (AES-256-GCM 加密，密钥存平台安全存储)
--- telegram_chat_id    | string (AES-256-GCM 加密，密钥存平台安全存储)
--- data_retention_days | number (默认 90)
--- auto_backup_enabled | boolean (默认 true)
--- sound_enabled       | boolean (默认 true)
+-- telegram_bot_token     | string (AES-256-GCM 加密，密钥存平台安全存储)
+-- telegram_chat_id       | string (AES-256-GCM 加密，密钥存平台安全存储)
+-- data_retention_days    | number (默认 90)
+-- auto_backup_enabled    | boolean (默认 true)
+-- sound_enabled          | boolean (默认 true)
 -- max_concurrent_backtests | number (默认 5)
--- db_version          | number (当前数据库 schema 版本号)
+-- initial_capital        | number (默认 10000，回测初始资金)
+-- db_version             | number (当前数据库 schema 版本号)
 
 -- ============================
 -- 错误日志
@@ -1808,6 +2020,34 @@ DELETE FROM monitor_tasks WHERE strategy_id = ?;
 DELETE FROM strategies WHERE id = ?;
 ```
 
+**回收站管理**:
+- 自动清理：应用启动时检查 `deleted_at` 超过 30 天的策略，执行硬删除
+- 清理时机：应用启动时（`app.on('ready')` 时执行）
+- 回收站列表查询：`SELECT * FROM strategies WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`
+- 恢复操作：`UPDATE strategies SET deleted_at = NULL WHERE id = ?`
+
+**回收站 API**:
+```typescript
+interface RecycleBinAPI {
+  // 列出回收站中的策略
+  listDeleted(): Promise<Array<{
+    id: string;
+    name: string;
+    deletedAt: string;
+    daysRemaining: number;  // 剩余可恢复天数
+  }>>;
+
+  // 恢复策略
+  restore(id: string): Promise<void>;
+
+  // 永久删除（不经过回收站）
+  hardDelete(id: string): Promise<void>;
+
+  // 清空回收站（批量永久删除）
+  emptyBin(): Promise<number>;  // 返回删除数量
+}
+```
+
 ---
 
 ## 条件树类型定义（TypeScript）
@@ -1834,7 +2074,7 @@ type IndicatorType =
   | 'FEAR_GREED' | 'FUNDING_RATE' | 'OPEN_INTEREST' | 'LONG_SHORT_RATIO' | 'LIQUIDATION'
   // 波动率类
   | 'HISTORICAL_VOLATILITY';
-// 注意: FEAR_GREED 暂不支持 MVP，后续接入第三方 API 后再加入
+// 注意: FEAR_GREED 的完整设计在指标计算公式章节，不属于 MVP 范围
 
 // ============================
 // 条件树
@@ -1881,6 +2121,63 @@ type ConditionTreeNode = ConditionGroup | ConditionLeaf;
 - trade_direction='long' 时: 只执行 buy 信号，忽略 sell 信号
 - trade_direction='short' 时: 只执行 sell 信号，忽略 buy 信号
 - trade_direction='both' 时: buy 信号开多，sell 信号开空
+
+// ============================
+// 条件树校验规则（strategy:validate）
+// ============================
+
+`strategy:validate` 执行条件树的完整性校验，返回 `{ valid: boolean; errors: ValidationError[] }`
+
+**校验规则**:
+
+1. **结构校验**
+   - 条件树根节点必须存在（`conditions` 字段非空）
+   - 递归校验每个节点：
+     - `ConditionGroup`: `logic` 必须是 'AND' 或 'OR'，`children` 数组长度 >= 1
+     - `ConditionLeaf`: `indicator` 必须是合法的 IndicatorType，`preset` 必须存在于预设映射中
+
+2. **叶节点 parameters 必填字段校验**
+   - 每个预设条件定义了必需参数列表（`requiredParams`）
+   - 校验规则：叶节点的 `parameters` 必须包含所有必需参数，且值为 number 类型
+   - 例如：RSI 预设 "rsi_overbought" 必需 `period` 和 `threshold`
+
+3. **条件组为空校验**
+   - `ConditionGroup.children` 长度必须 >= 1
+   - 空的条件组（无子节点）视为非法，validate 返回错误: `CHILDREN_EMPTY`
+
+4. **最大嵌套深度限制**
+   - 最大嵌套深度: 5 层（软限制）
+   - 超出时返回警告 `MAX_DEPTH_EXCEEDED`（不阻止保存，但前端应提示用户）
+
+5. **信号方向一致性校验**
+   - 同一条件组内所有叶节点的 `signalDirection` 必须相同
+   - 混合方向时返回错误: `MIXED_SIGNAL_DIRECTION`
+   - 错误消息格式: `"条件组 {groupId} 混合了买入和卖出信号方向"`
+
+6. **禁用的预设条件校验**
+   - `FEAR_GREED` 等不在 MVP 范围内的指标，预设条件中 `enabled: false`
+   - 保存时若包含禁用指标，返回错误: `INDICATOR_DISABLED`
+   - 错误消息: `"指标 {indicator} 暂不支持，请移除后保存"`
+
+**ValidationError 类型**:
+```typescript
+interface ValidationError {
+  code: 'TREE_EMPTY' | 'INVALID_TYPE' | 'MISSING_PARAMS' | 'CHILDREN_EMPTY' |
+        'MAX_DEPTH_EXCEEDED' | 'MIXED_SIGNAL_DIRECTION' | 'INDICATOR_DISABLED';
+  message: string;
+  nodeId?: string;           // 出错的节点 ID（可选）
+  field?: string;            // 出错的字段名（可选）
+}
+```
+
+**错误消息示例**:
+- `TREE_EMPTY`: "条件树为空，请至少添加一个条件"
+- `INVALID_TYPE`: "节点 {nodeId} 类型非法，必须为 'group' 或 'leaf'"
+- `MISSING_PARAMS`: "节点 {nodeId} 缺少必需参数: {paramName}"
+- `CHILDREN_EMPTY`: "条件组 {nodeId} 不能为空"
+- `MAX_DEPTH_EXCEEDED`: "条件树嵌套深度超过 5 层，可能影响性能"
+- `MIXED_SIGNAL_DIRECTION`: "条件组 {nodeId} 混合了买入和卖出信号方向"
+- `INDICATOR_DISABLED`: "指标 {indicator} 暂不支持，请移除后保存"
 
 // ============================
 // 指标预设条件映射（示例）
@@ -2018,6 +2315,58 @@ interface OptimizationResult {
 
 // ============================
 // IPC 通信类型
+// ============================
+
+// IPC 错误类型定义
+interface IPCError {
+  code: string;        // 错误码，如 'STRATEGY_NOT_FOUND', 'VALIDATION_ERROR'
+  message: string;     // 用户可读的错误消息
+  details?: any;       // 详细信息（可选）
+}
+
+// IPC 错误码规范
+const IPC_ERROR_CODES = {
+  // 通用错误 (E1xx)
+  UNKNOWN_ERROR: 'E100',
+  INVALID_PARAMS: 'E101',
+  NOT_FOUND: 'E102',
+  PERMISSION_DENIED: 'E103',
+
+  // 策略相关错误 (E2xx)
+  STRATEGY_NOT_FOUND: 'E201',
+  STRATEGY_VALIDATION_FAILED: 'E202',
+  STRATEGY_DELETE_FAILED: 'E203',
+
+  // 监控相关错误 (E3xx)
+  MONITOR_NOT_FOUND: 'E301',
+  MONITOR_ALREADY_RUNNING: 'E302',
+  MONITOR_ALREADY_STOPPED: 'E303',
+
+  // 回测相关错误 (E4xx)
+  BACKTEST_NOT_FOUND: 'E401',
+  BACKTEST_RUNNING: 'E402',
+  BACKTEST_CANCELLED: 'E403',
+
+  // 优化相关错误 (E5xx)
+  OPTIMIZATION_NOT_FOUND: 'E501',
+  OPTIMIZATION_RUNNING: 'E502',
+
+  // 系统错误 (E9xx)
+  DB_ERROR: 'E901',
+  CRYPTO_ERROR: 'E902',
+  NETWORK_ERROR: 'E903',
+} as const;
+
+// 所有 IPC 方法返回类型统一为 Promise<T>，错误通过抛出 IPCError 传递
+// 前端调用示例:
+// try {
+//   const strategy = await window.electronAPI.strategy.get(id);
+// } catch (err) {
+//   if (err.code === IPC_ERROR_CODES.STRATEGY_NOT_FOUND) {
+//     // 处理策略不存在
+//   }
+// }
+
 // ============================
 
 // 前端 → 主进程 的 API 接口定义
@@ -2430,6 +2779,29 @@ async function invokeWithTimeout<T>(channel: string, args: any[], timeout = 3000
 └─────────────────────────────────────────────────┘
 ```
 
+**新建监控流程**:
+1. 用户点击 [+ 新建监控] → 弹出策略选择器（列表展示已有策略）
+2. 选择策略后 → 进入监控配置页：
+   - 选择币种（单选或多选）：从一个币种创建单个任务，或从多个币种批量创建多个任务
+   - 设置冷却时间（默认 300 秒）
+   - 确认创建
+3. 创建时系统自动：
+   - 将策略的当前条件树快照存入 `strategy_snapshot`（JSON）
+   - 将策略名称冗余存入 `strategy_name`（便于策略删除后仍显示）
+4. 创建完成后任务状态为 `stopped`，用户手动启动或立即启动
+
+**监控与策略的关联**:
+- 一个策略可创建多个监控任务（不同币种或不同冷却时间）
+- 策略条件树变更后，运行中的任务不受影响（使用快照）
+- 策略删除后，监控任务停止运行，`strategy_name` 冗余字段保证名称仍可显示
+
+**策略复制功能**:
+- 列表操作列 [复制] 按钮
+- 点击后复制策略，名称自动变为 "原名称 (副本)"
+- 复制内容：条件树、标签、时间框架、币种列表、参数配置
+- 不复制：监控任务（独立创建）
+- 标签继承原策略标签
+
 ### 回测页
 
 ```
@@ -2463,6 +2835,20 @@ async function invokeWithTimeout<T>(channel: string, args: any[], timeout = 3000
 │ └─────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────┘
 ```
+
+**回测"保存参数到策略"行为**:
+- 点击后保存的参数：
+  - 指标参数（如 RSI period、MACD fast/slow period 等）
+  - 止损止盈参数（stop_loss_pct、take_profit_pct、trailing_stop_pct）
+  - 交易参数（fee_rate、slippage、position_pct）
+  - **不保存**：回测时间范围、币种、手续费率等回测环境配置
+- 保存时弹出确认框：
+  - "是否同步更新当前监控任务中的策略参数？"
+  - 若选"是"：同步更新所有使用该策略的监控任务的 `strategy_snapshot`
+  - 若选"否"：仅更新策略本身，监控任务使用旧快照运行
+- `strategy_snapshot` 更新后：
+  - 运行中的监控任务在下一次信号检测时使用新快照
+  - 或用户手动重启任务以立即应用新配置
 
 ### 设置页
 
@@ -2724,20 +3110,23 @@ const api: ElectronAPI = process.env.NEXT_PUBLIC_USE_MOCK === 'true'
 3. 遍历完毕 → 计算汇总指标
 
    ├─ 总收益率 = (最终权益 - 初始资金) / 初始资金
-      初始资金: 默认 10,000 USDT（用户可配置）
-      仓位: 每笔开仓使用初始资金的固定百分比（默认 10%）
+      初始资金: 默认 10,000 USDT（用户可配置，存储于 initial_capital 字段）
+      仓位: 每笔开仓使用初始资金的固定百分比（默认 10%，基于 initial_capital，非复利）
       注意: 仓位基于初始资金（非复利），便于横向比较不同策略
 
    ├─ 年化收益率 = (1 + 总收益率) ^ (365 / 日历天数) - 1
-      注意: 这是简单年化（非复合年化），未考虑期间资金闲置
+      注意: 这是复合年化收益率（考虑期间资金再投资），未考虑资金闲置
       日历天数 = 回测结束日期 - 回测开始日期
 
    ├─ 夏普比率 = (mean(daily_returns) - risk_free_rate) / std(daily_returns) * sqrt(252)
       参数:
       - risk_free_rate: 默认 0.04 / 252（年化 4% 的日利率）
       - daily_returns: 每日收益率序列（每笔交易结束后按日计算权益变化）
-      - 分母为 0 时（std=0），夏普比率返回 0
-      UI 显示: 显示使用的无风险利率值
+      - 分母为 0 时（std=0，即无波动），夏普比率返回 0
+      注意:
+      - 使用日收益率序列（非简单日收益）
+      - 年化夏普 = 日夏普 * sqrt(252)
+      - UI 显示: 显示使用的无风险利率值
 
    ├─ 最大回撤 = max((peak - trough) / peak)，遍历权益曲线计算滚动峰值
       实现:
@@ -2747,13 +3136,6 @@ const api: ElectronAPI = process.env.NEXT_PUBLIC_USE_MOCK === 'true'
         if equity > peak: peak = equity
         drawdown = (peak - equity) / peak
         if drawdown > max_drawdown: max_drawdown = drawdown
-
-   ├─ 夏普比率 = (mean(daily_returns) - risk_free_rate) / std(daily_returns) * sqrt(252)
-      注意:
-      - 使用日收益率序列（非简单日收益）
-      - risk_free_rate = 年化无风险利率 / 252（如 年化 4% → 日频 0.000159）
-      - 分母为 0 时（std=0，即无波动），夏普比率返回 0
-      - 年化夏普 = 日夏普 * sqrt(252)
 
    ├─ 胜率 = 盈利次数 / 总交易次数
 
@@ -2773,7 +3155,7 @@ const api: ElectronAPI = process.env.NEXT_PUBLIC_USE_MOCK === 'true'
 | 止损/止盈日内穿透 | 极端行情中 high/low 穿透止损/止盈价 | 成交价按止损/止盈价，不按极端穿透价 |
 | 收益率为零/负 | 无交易或全亏损 | 分母为零时返回特定值 |
 | 波动率为零 | 无风险资产或恒定价格 | 夏普比率返回 0 |
-| 浮点精度 | 多次计算累积误差 | 使用 Decimal.js 或银行家舍入 |
+| 浮点精度 | 多次计算累积误差 | 使用 Math.round() + 固定小数位数（4位），不使用 Decimal.js（避免引入额外依赖） |
 
 ## 用户体验与交互细节
 
@@ -2845,11 +3227,246 @@ const api: ElectronAPI = process.env.NEXT_PUBLIC_USE_MOCK === 'true'
 | `Cmd+Z` | 撤销条件树操作 | 策略编辑页 |
 | `Cmd+Shift+Z` | 重做条件树操作 | 策略编辑页 |
 
-快捷键列表在设置页底部可查看，支持自定义（MVP 后考虑）。
+快捷键列表在设置页底部可查看。
 
-**Undo/Redo 实现**: 使用 Zustand 的 `useUndo` 或 immer + 自定义 middleware，存储条件树的快照而非操作序列。每次条件变更保存到历史栈，最多保留 50 个快照。
+**Undo/Redo 实现**: 使用 `zustand/middleware` 的 `immer` + 自定义 `undo` middleware。存储条件树的快照而非操作序列，每次条件变更保存到历史栈，最多保留 50 个快照。
+
+**实现方案**:
+```typescript
+// 条件树编辑使用 immer + undo middleware
+const useStrategyEditor = create(
+  immer(
+    (set, get) => ({
+      conditions: {},
+      past: [],    // 最多 50 个快照
+      future: [],
+
+      // 更新条件树并保存快照
+      updateConditions: (newConditions: ConditionTreeNode) => {
+        set(state => {
+          state.past.push(state.conditions);
+          if (state.past.length > 50) state.past.shift();
+          state.conditions = newConditions;
+          state.future = [];
+        });
+      },
+
+      undo: () => set(state => {
+        if (state.past.length === 0) return;
+        state.future.push(state.conditions);
+        state.conditions = state.past.pop();
+      }),
+
+      redo: () => set(state => {
+        if (state.future.length === 0) return;
+        state.past.push(state.conditions);
+        state.conditions = state.future.pop();
+      }),
+    })
+  )
+);
+```
+
+**内存管理**: 快照仅存储条件树 JSON（通常 < 10KB），50 个快照上限约 500KB，风险可控。
 
 ---
+### 12. 其他
+
+**界面**: 暗色模式（前端决定）
+
+**应用窗口**: 单窗口 + 标签页切换（跨平台桌面应用常见模式）
+
+**新手引导**: 可跳过的引导流程
+
+**自动更新**:
+- 使用 `electron-updater` + GitHub Releases
+- 检查频率：应用启动时检查 + 每 6 小时轮询
+- 更新包格式：`.zip`（便于差分更新），通过 `electron-builder` 内置的 `nsis differential update` 实现增量更新（自动处理）
+- 更新流程：下载 → 验证签名 → 解压 → 下次启动应用时自动替换（`electron-updater` 自动处理）
+- 更新失败回滚：启动时检测上一版本备份（`{userData}/backups/`），若更新后应用损坏自动回滚
+
+**异常恢复**: 检测到异常退出时，提示用户是否恢复状态
+
+**日志**: 错误日志记录（普通用户无需关注）
+
+**声音**: 信号触发时系统提示音
+
+**主题**: 单主题（前端决定）
+
+---
+
+### 13. 错误处理与日志
+
+**错误码体系**:
+
+| 错误码 | 范围 | 说明 |
+|--------|------|------|
+| E1xx | 网络 | E101 连接超时, E102 DNS 解析失败, E103 SSL 错误, E104 连接被拒绝 |
+| E2xx | 数据 | E201 K线数据缺失, E202 数据格式异常, E203 数据过期 |
+| E3xx | 策略 | E301 条件验证失败, E302 指标计算错误, E303 参数越界 |
+| E4xx | 推送 | E401 Telegram 推送失败, E402 Bot Token 无效, E403 Chat ID 无效 |
+| E5xx | 回测 | E501 回测数据不足, E502 回测计算异常, E503 参数优化超时 |
+| E6xx | 系统 | E601 数据库损坏, E602 内存不足, E603 磁盘空间不足, E604 应用崩溃 |
+
+**日志分级**: Warning + Error
+
+**日志查看**: 分级查看（Error/Warning 分开）+ 日志轮转
+
+**日志保留**: 30 天 + 100MB 双重限制
+
+**日志位置**: `{userData}/logs/`
+
+**渲染进程错误处理**:
+```typescript
+// React Error Boundary 组件
+class ErrorBoundary extends Component {
+  state = { hasError: boolean; error: Error | null };
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    logError('E604', error.message, { componentStack: info.componentStack });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <ErrorFallback error={this.state.error} />;
+    }
+    return this.props.children;
+  }
+}
+```
+
+**磁盘空间预检查**:
+- 全量下载 K 线前检查剩余磁盘空间
+- 最低要求: 剩余空间 > 预估所需空间 × 1.5
+- 空间不足时提示用户清理或调整保留天数
+
+**网络错误展示**: 错误码 + 中文描述 + 操作建议
+
+**WebSocket 断线**: 显示重连状态 + 重连次数 + 最终结果
+
+**API 请求超时**: toast 提示"请求超时，正在重试..."（静默重试 3 次，全部失败后弹出确认框）
+
+**API 限流**: 自动排队处理，等待超过 30 秒时显示倒计时提示
+
+**数据下载失败**: 显示具体失败原因 + 提供手动重试按钮
+
+**回测计算出错**: 显示错误码 + 错误步骤 + 错误数据行 + 可选跳过继续计算
+
+**参数优化出错**: 自动跳过出错组合 + 记录错误 + 完成全部后显示汇总（含出错数量）
+
+**Telegram 推送失败**: 静默重试 3 次（5s → 10s → 20s 指数退避），3 次失败后应用内提示「可重新推送」
+
+**策略验证失败**: 保存时自动验证 + 失败提示具体错误 + 提供修复建议
+
+**告警触发失败**: 应用内提示 + 自动重试 + 记录重试结果
+
+**危险操作**: 二次确认 + 30 秒内可撤销（仅限删除策略、删除监控任务、删除监控对象）
+
+**系统托盘**: 最小化到托盘持续运行
+- **窗口关闭行为**:
+  - 默认行为：点击关闭按钮 → 最小化到托盘（不退出应用）
+  - 首次关闭时弹出提示："应用将在后台继续运行，监控任务不受影响。右击托盘图标可退出应用。"
+  - 用户可勾选"不再提示"，此后直接最小化到托盘
+  - 在设置中可改为"关闭即退出"（适用于完全退出场景）
+- **托盘菜单**（右键单击）:
+  - 显示/隐藏主窗口
+  - 暂停所有任务 / 恢复所有任务
+  - 退出应用（完全退出，结束所有进程）
+- **macOS Dock 栏图标**:
+  - Dock 图标与托盘图标同步显示
+  - 点击 Dock 图标：恢复主窗口（若已最小化）
+  - 应用在后台运行时，Dock 图标不变（无 badge 标注）
+- **托盘图标状态**:
+  - 绿色圆点：有任务在运行
+  - 灰色圆点：所有任务已暂停/停止
+  - 红色圆点：有错误/告警（点击可查看详情）
+
+**应用崩溃**: 自动生成错误报告 + 下次启动时询问是否查看/发送
+
+**内存不足**: 提示用户关闭其他应用 + 自动降低并发数
+
+**数据库损坏**: 自动尝试备份恢复 + 失败后提示 + 提供导出剩余数据和重置选项
+
+---
+
+### 14. 部署与打包
+
+**打包目标**:
+- macOS: `.dmg` 安装包（Apple Silicon + Intel 通用）
+- Windows: `.exe` (NSIS installer)
+
+**macOS 签名与公证**:
+- 使用 Apple Developer ID 证书签名（`electron-builder` 的 `mac.sign` 配置）
+- 签名后通过 `afterSign` hook 自动提交 Apple 公证（Notarization）
+- 开发阶段使用 ad-hoc 签名（跳过公证），不适用于正式分发
+
+**Windows 签名**:
+- 使用 OV（组织验证）证书起步（`electron-builder` 的 `win.sign` 配置）
+- 优先使用 EV（扩展验证）证书：EV 证书签名后 SmartScreen 信誉建立更快，新装机用户无警告
+- 正式分发必须签名（Windows SmartScreen 会拦截未签名应用）
+- 开发阶段跳过签名
+
+**electron-builder 关键配置**:
+- `npmRebuild: false`（使用预编译的 native 模块，不重新编译）
+- 移除 `node_modules` 中不必要的 `.ts`、`.md`、类型声明文件
+- 最终安装包开启压缩
+
+**安装包体积优化**:
+- pnpm + Tree Shaking：确保生产构建时去除未使用代码
+- 图表库按需引入（`lightweight-charts` 只 import 需要的模块）
+- native 模块（`better-sqlite3`）使用 `@electron/rebuild` 预编译，避免运行时重复编译
+
+**分发渠道**: GitHub Releases（托管更新包 + release notes）
+
+---
+
+### 15. 数据备份与恢复
+
+**自动备份**:
+- 触发时机：每周日凌晨 3:00（系统空闲时）
+- 备份文件命名：`backup_YYYYMMDD_HHmmss.db`
+- 存储路径：`{userData}/backups/`
+- 保留策略：自动保留最近 4 周备份，超期自动删除；手动备份不自动清理
+
+**备份内容**: 完整 SQLite 数据库文件（含策略、任务、信号、回测历史、K 线缓存、指标缓存）
+
+**灾难恢复**:
+- 设置页提供「从备份恢复」入口
+- 用户选择备份文件后执行 `sqlite3 .restore` 恢复
+- 恢复后自动重启应用并验证数据一致性
+- 恢复失败时保留原数据库，提示用户手动处理
+
+**数据迁移工具**:
+- 设置页提供「导出全部数据」：导出为单个 JSON 文件（含策略、任务、设置、回测历史，不含 K 线缓存）
+- 设置页提供「导入全部数据」：导入时校验 schema 版本，提示兼容性信息
+- 导入导出文件命名：`盯盘侠数据_YYYYMMDD.json`
+
+**应用版本升级（数据迁移）**:
+- 启动时检测 `app_settings.db_version` 与代码期望版本是否一致
+- 不一致时弹出确认框告知用户需要迁移，征得同意后执行迁移脚本
+- 迁移失败时保留原数据库，提示用户手动处理或联系支持
+
+---
+
+### 16. 法律与合规
+
+**用户协议与隐私政策**:
+- 首次启动时展示，用户必须点击「同意」才能继续使用
+- 协议内容要点：
+  - 所有数据存储在用户本地设备，应用不收集任何个人信息
+  - 应用不接入任何追踪服务（无埋点、无 analytics）
+  - 市场数据来源于币安公开 API，数据归属权归币安所有
+  - 历史回测结果仅供参考，不代表未来收益表现
+  - 投资有风险，使用本应用造成的任何损失由用户自行承担
+
+**风险提示**:
+- 策略创建页、回测页、参数优化页底部添加固定提示语：「历史回测结果仅供参考，不代表未来收益。投资有风险，请谨慎决策。」
+
+**数据来源声明**: 应用内关于页面注明「数据来源：币安」，界面上实时价格标注「数据来源：币安」
 
 ### 17. 数据安全与隐私
 
@@ -2863,7 +3480,7 @@ const api: ElectronAPI = process.env.NEXT_PUBLIC_USE_MOCK === 'true'
 
 **密钥管理**:
 - macOS: 系统 Keychain（`keytar` 库）存储 AES 加密密钥
-- Windows: DPAPI（`node-dpapi` 或 `win-dpapi`）保护密钥
+- Windows: DPAPI（`node-dpapi`）保护密钥
 
 **AES-256-GCM 实现细节**:
 ```typescript
@@ -2895,8 +3512,26 @@ new BrowserWindow({
   }
 });
 
-// CSP (Content Security Policy) 配置建议
-// default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+// CSP (Content Security Policy) 配置
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",                                // 仅信任同源脚本
+  "style-src 'self' 'unsafe-inline'",                 // 允许内联样式（Next.js 需要）
+  "img-src 'self' data: https:",                       // 允许同源图片和 data: URL
+  "connect-src 'self' https://api.binance.com",        // 允许连接币安 API
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+].join('; ');
+
+mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+  callback({
+    responseHeaders: {
+      ...details.responseHeaders,
+      'Content-Security-Policy': [CSP],
+    },
+  });
+});
 ```
 ```
 - 降级方案: 若平台安全存储不可用:
@@ -2909,16 +3544,25 @@ new BrowserWindow({
 
 ```typescript
 // 加密流程
-encrypt(plaintext: string): string
-  → 密钥 = getKeyFromPlatformSecureStorage() || deriveFromMachineId()
-  → iv = crypto.randomBytes(12)
-  → cipher = aes-256-gcm(key, iv)
-  → return base64(iv + authTag + ciphertext)
+encrypt(plaintext: string): string {
+  const key = getKeyFromPlatformSecureStorage();
+  if (!key) {
+    throw new Error('PLATFORM_SECURE_STORAGE_UNAVAILABLE');
+    // → 上层捕获错误，按 fail closed 策略处理：提示用户功能暂不可用
+  }
+  const iv = crypto.randomBytes(12);
+  const cipher = aes-256-gcm(key, iv);
+  return base64(iv + authTag + ciphertext);
+}
 
-decrypt(ciphertext: string): string
-  → 解析 iv, authTag, ciphertext
-  → 密钥同上
-  → return plaintext
+decrypt(ciphertext: string): string {
+  const key = getKeyFromPlatformSecureStorage();
+  if (!key) {
+    throw new Error('PLATFORM_SECURE_STORAGE_UNAVAILABLE');
+  }
+  const { iv, authTag, data } = parse(ciphertext);
+  return decipher(key, iv, authTag, data);
+}
 ```
 
 #### 数据导出安全
@@ -3262,13 +3906,51 @@ function migrateDatabase(db: Database, fromVersion: number) {
 | `Cmd+Z` | 撤销条件树操作 | 策略编辑页 |
 | `Cmd+Shift+Z` | 重做条件树操作 | 策略编辑页 |
 
-快捷键列表在设置页底部可查看，支持自定义（MVP 后考虑）。
+快捷键列表在设置页底部可查看。
 
-**Undo/Redo 实现**: 使用 Zustand 的 `useUndo` 或 immer + 自定义 middleware，存储条件树的快照而非操作序列。每次条件变更保存到历史栈，最多保留 50 个快照。
+**Undo/Redo 实现**: 使用 `zustand/middleware` 的 `immer` + 自定义 `undo` middleware。存储条件树的快照而非操作序列，每次条件变更保存到历史栈，最多保留 50 个快照。
+
+**实现方案**:
+```typescript
+// 条件树编辑使用 immer + undo middleware
+const useStrategyEditor = create(
+  immer(
+    (set, get) => ({
+      conditions: {},
+      past: [],    // 最多 50 个快照
+      future: [],
+
+      // 更新条件树并保存快照
+      updateConditions: (newConditions: ConditionTreeNode) => {
+        set(state => {
+          state.past.push(state.conditions);
+          if (state.past.length > 50) state.past.shift();
+          state.conditions = newConditions;
+          state.future = [];
+        });
+      },
+
+      undo: () => set(state => {
+        if (state.past.length === 0) return;
+        state.future.push(state.conditions);
+        state.conditions = state.past.pop();
+      }),
+
+      redo: () => set(state => {
+        if (state.future.length === 0) return;
+        state.past.push(state.conditions);
+        state.conditions = state.future.pop();
+      }),
+    })
+  )
+);
+```
+
+**内存管理**: 快照仅存储条件树 JSON（通常 < 10KB），50 个快照上限约 500KB，风险可控。
 
 ---
 
-### 17. 数据安全与隐私
+### 23. 数据安全与隐私
 
 #### 敏感数据加密
 
@@ -3280,7 +3962,7 @@ function migrateDatabase(db: Database, fromVersion: number) {
 
 **密钥管理**:
 - macOS: 系统 Keychain（`keytar` 库）存储 AES 加密密钥
-- Windows: DPAPI（`node-dpapi` 或 `win-dpapi`）保护密钥
+- Windows: DPAPI（`node-dpapi`）保护密钥
 
 **AES-256-GCM 实现细节**:
 ```typescript
@@ -3312,8 +3994,26 @@ new BrowserWindow({
   }
 });
 
-// CSP (Content Security Policy) 配置建议
-// default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+// CSP (Content Security Policy) 配置
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",                                // 仅信任同源脚本
+  "style-src 'self' 'unsafe-inline'",                 // 允许内联样式（Next.js 需要）
+  "img-src 'self' data: https:",                       // 允许同源图片和 data: URL
+  "connect-src 'self' https://api.binance.com",        // 允许连接币安 API
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+].join('; ');
+
+mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+  callback({
+    responseHeaders: {
+      ...details.responseHeaders,
+      'Content-Security-Policy': [CSP],
+    },
+  });
+});
 ```
 ```
 - 降级方案: 若平台安全存储不可用:
@@ -3326,16 +4026,25 @@ new BrowserWindow({
 
 ```typescript
 // 加密流程
-encrypt(plaintext: string): string
-  → 密钥 = getKeyFromPlatformSecureStorage() || deriveFromMachineId()
-  → iv = crypto.randomBytes(12)
-  → cipher = aes-256-gcm(key, iv)
-  → return base64(iv + authTag + ciphertext)
+encrypt(plaintext: string): string {
+  const key = getKeyFromPlatformSecureStorage();
+  if (!key) {
+    throw new Error('PLATFORM_SECURE_STORAGE_UNAVAILABLE');
+    // → 上层捕获错误，按 fail closed 策略处理：提示用户功能暂不可用
+  }
+  const iv = crypto.randomBytes(12);
+  const cipher = aes-256-gcm(key, iv);
+  return base64(iv + authTag + ciphertext);
+}
 
-decrypt(ciphertext: string): string
-  → 解析 iv, authTag, ciphertext
-  → 密钥同上
-  → return plaintext
+decrypt(ciphertext: string): string {
+  const key = getKeyFromPlatformSecureStorage();
+  if (!key) {
+    throw new Error('PLATFORM_SECURE_STORAGE_UNAVAILABLE');
+  }
+  const { iv, authTag, data } = parse(ciphertext);
+  return decipher(key, iv, authTag, data);
+}
 ```
 
 #### 数据导出安全
@@ -3356,250 +4065,3 @@ decrypt(ciphertext: string): string
 | 传输安全 | HTTPS only (GitHub Releases) |
 | 降级保护 | 不允许降级安装（版本号校验） |
 
----
-
-### 18. 错误处理与系统健壮性
-
-#### 用户友好的错误呈现
-
-| 错误级别 | 展示方式 | 内容 |
-|---------|---------|------|
-| 轻微 (Toast) | 右下角 Toast，3 秒自动消失 | 错误码 + 一句话中文描述 |
-| 一般 (Dialog) | 居中弹窗，需手动关闭 | 错误码 + 中文描述 + 操作建议 + [查看详情] |
-| 严重 (Full) | 全屏错误页 | 错误码 + 描述 + [查看日志] [报告问题] [重试] [重置] |
-
-**[查看详情]** 展开显示技术细节（原始错误信息、堆栈摘要）。
-
-**[报告问题]** 将错误日志复制到剪贴板（不自动发送，用户自行粘贴到 GitHub Issue / Telegram 群）。
-
-#### 日志查看器
-
-设置页内置日志查看器：
-
-```
-┌─────────────────────────────────────────────────┐
-│ 日志查看器                      [导出] [清理]    │
-│ ┌──────────────────────────────────────────────┐ │
-│ │ 级别: [全部▼] [Error] [Warning]              │ │
-│ │ 时间: [最近24h ▼]   搜索: [____________]     │ │
-│ └──────────────────────────────────────────────┘ │
-│ ┌──────────────────────────────────────────────┐ │
-│ │ ⚠️ W 14:30:25 API请求限流，等待15s重试       │ │
-│ │    → monitor:fetch_klines | BTC/USDT 4h     │ │
-│ │ ✕  E 14:28:10 E401 Telegram推送失败          │ │
-│ │    → Chat ID无效 | [重新推送]                │ │
-│ │ ⚠️ W 14:25:01 WebSocket断线，切换REST轮询    │ │
-│ │    → 重连尝试 1/5                            │ │
-│ └──────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────┘
-```
-
-- 筛选: 按级别 (Error / Warning)、时间范围、模块
-- 搜索: 全文搜索日志消息
-- 操作: [导出 CSV] [清理 N 天前的日志]
-- 自动滚动到最新
-
-#### 灾难恢复矩阵
-
-| 场景 | 检测方式 | 恢复策略 |
-|------|---------|---------|
-| SQLite 数据库损坏 | 启动时 `PRAGMA integrity_check` | 自动尝试从最近备份恢复 → 失败则提示用户选择: 导出剩余数据 / 重置 |
-| 配置文件损坏 | 启动时 JSON.parse 校验 | 忽略损坏项，使用默认值，Toast 提示"部分设置已重置" |
-| K线缓存数据不一致 | 校验时间戳连续性 | 自动标记不一致范围，下次启动时重新下载该段数据 |
-| 应用崩溃后重启 | 检查 `crash_marker` 文件 | 显示"上次异常退出"对话框，提供: [查看崩溃日志] [恢复监控任务] [忽略] |
-| 监控任务状态不一致 | 启动时校验任务表 vs 实际运行状态 | 崩溃标记存在时，将所有 `status=running` 的任务重置为 `stopped`，由用户决定是否恢复 |
-
----
-
-### 19. 性能与可扩展性
-
-#### 大数据量 UI 性能
-
-| 场景 | 数据量级 | 优化策略 |
-|------|---------|---------|
-| 策略列表 | < 200 条 | 常规渲染，前端内存筛选 |
-| 监控任务列表 | ≤ 50 个 | 常规渲染 |
-| 信号记录列表 | 数万条 | **虚拟滚动** (`@tanstack/virtual`)，每页加载 100 条，滚动加载 |
-| 回测交易明细 | 数千条 | 分页表格 (每页 50 条)，支持跳页 |
-| 回测历史列表 | 数百条 | 常规渲染 |
-| K线图表 | 数万根 | lightweight-charts 内置按视口渲染 |
-| 参数优化结果 | 数百到数千行 | **虚拟滚动**表格 + 分页 |
-
-**搜索与筛选**: 输入 300ms 防抖后执行筛选，避免频繁重渲染。
-
-#### 内存管理
-
-| 组件 | 内存策略 |
-|------|---------|
-| 指标预计算缓存 | LRU 策略，默认最多缓存 50 组参数 × 10000 条数据点 ≈ 200MB 上限 |
-| WebSocket 缓冲 | 环形缓冲区，只保留最近 1000 条 tick 数据（仅用于 UI 显示） |
-| 回测执行 | 单次回测数据加载后逐根处理，处理完的 K 线释放。权益曲线数组不超过 50000 点（超过则降采样） |
-| 策略引擎 | 每个监控任务独立上下文，指标计算只保留最近 N 根 K 线（N = 指标所需最大周期 × 2） |
-
-**内存监控**: 主进程每 30 秒检查 `process.memoryUsage().heapUsed`，超过 500MB 时:
-1. 清理最久未使用的指标缓存
-2. Toast 提示用户
-3. 超过 800MB 时自动暂停非关键任务
-
-#### 后台资源占用
-
-| 状态 | CPU | 内存 | 策略 |
-|------|-----|------|------|
-| 前台活跃 | 无限制 | 无限制 | — |
-| 最小化到托盘 | ≤ 2% | ≤ 200MB | WebSocket 保持连接，价格推送频率降为每 10 秒一次 |
-| 后台长时间运行 | ≤ 1% | ≤ 150MB | 仅在 K 线收线时计算，其余时间 idle |
-
----
-
-### 20. 品牌与视觉资产
-
-#### 应用图标
-
-- **macOS**: `.icns` 格式，包含 16x16 ~ 1024x1024 全尺寸
-- **设计元素**: 机器人 + 放大镜/望远镜 + 上涨箭头组合，体现"自动盯盘"
-- **主色调**: 科技蓝 (#3B82F6) + 涨色绿 (#10B981)
-
-#### 启动画面
-
-- macOS 使用 `electron-builder` 的 `splash` 配置
-- 显示 2 秒应用 Logo + 加载动画，主进程初始化完成后自动关闭
-
-#### 设计令牌 (Design Tokens)
-
-```typescript
-// tailwind.config.ts 中定义的品牌令牌
-{
-  theme: {
-    extend: {
-      colors: {
-        brand: {
-          primary: '#3B82F6',    // 主色（操作按钮、选中态）
-          success: '#10B981',    // 涨/买入/成功
-          danger: '#EF4444',     // 跌/卖出/危险操作
-          warning: '#F59E0B',    // 警告/冷却中
-        },
-        surface: {
-          bg: '#0F172A',         // 主背景
-          card: '#1E293B',       // 卡片背景
-          elevated: '#334155',   // 浮层背景
-          border: '#475569',     // 边框
-        },
-        text: {
-          primary: '#F8FAFC',    // 主文字
-          secondary: '#94A3B8',  // 次要文字
-          muted: '#64748B',      // 弱化文字
-        },
-      },
-      borderRadius: {
-        sm: '4px',
-        md: '8px',
-        lg: '12px',
-      },
-      fontSize: {
-        xs: '12px',
-        sm: '13px',
-        base: '14px',
-        lg: '16px',
-        xl: '20px',
-      },
-    },
-  },
-}
-```
-
----
-
-### 21. 测试与质量保证
-
-#### 测试策略
-
-| 层级 | 覆盖目标 | 框架 |
-|------|---------|------|
-| 单元测试 | 策略引擎核心逻辑 ≥ 80% | Vitest |
-| 单元测试 | 回测引擎核心逻辑 ≥ 80% | Vitest |
-| 单元测试 | 指标计算函数 ≥ 90% | Vitest |
-| 单元测试 | 工具函数 / 数据转换 ≥ 70% | Vitest |
-| 组件测试 | 关键交互组件（条件树编辑器、策略表单） | Vitest + Testing Library |
-| 集成测试 | IPC 通信（preload → 主进程 → 数据库） | Vitest |
-| 端到端测试 | 核心流程（创建策略 → 启动监控 → 收到信号） | Playwright (Electron) |
-
-#### 测试数据集
-
-| 数据集 | 用途 | 内容 |
-|--------|------|------|
-| 正常行情 | 基本功能验证 | BTC 6个月 4h K线，含趋势+震荡 |
-| 极端行情 | 边界测试 | 2020.3.12 暴跌、2021 牛市顶点数据 |
-| 数据缺失 | 容错测试 | 刻意删除部分K线，测试数据补全逻辑 |
-| 高频震荡 | 性能测试 | 1m K线 1 年数据，测试回测性能 |
-| 空白数据 | 空状态测试 | 无任何K线数据 |
-| 网络异常 | 错误处理测试 | Mock 超时、限流、断线场景 |
-
-#### CI/CD 检查项
-
-- 每次 PR: `pnpm lint` + `pnpm type-check` + `pnpm test`
-- 合并前: `pnpm test:e2e` (Playwright)
-- 发布前: `pnpm build` + 手动冒烟测试
-
----
-
-### 22. 部署与维护
-
-#### 崩溃报告
-
-**方案**: **本地记录为主**，不集成第三方服务（本地优先原则）。
-
-| 环节 | 处理 |
-|------|------|
-| 崩溃捕获 | Electron `crashReporter` + `process.on('uncaughtException')` |
-| 本地存储 | 写入 `{userData}/crash-reports/` |
-| 用户通知 | 下次启动弹窗: "上次异常退出" + [查看日志] [复制报告] |
-| 分享方式 | 用户手动复制日志文件到 GitHub Issue / Telegram 群 |
-
-**不使用 Sentry 等云服务**，符合本地优先原则。
-
-#### 数据库版本迁移
-
-```typescript
-// electron/services/database.ts
-const DB_VERSION = 2; // 当前版本号
-
-function migrateDatabase(db: Database, fromVersion: number) {
-  for (let v = fromVersion + 1; v <= DB_VERSION; v++) {
-    switch (v) {
-      case 2:
-        // 示例: v1 → v2 添加 optimization 字段
-        db.exec('ALTER TABLE backtest_results ADD COLUMN optimization_id TEXT');
-        break;
-      // case 3: ...
-    }
-  }
-  db.pragma(`user_version = ${DB_VERSION}`);
-}
-
-// 启动时
-const currentVersion = db.pragma('user_version')[0].user_version;
-if (currentVersion < DB_VERSION) {
-  // 1. 备份数据库
-  backupDatabase();
-  // 2. 执行迁移
-  migrateDatabase(db, currentVersion);
-  // 3. 验证完整性
-  db.pragma('integrity_check');
-}
-```
-
-**迁移原则**:
-- 只增不改删（新增字段/表，不删旧字段）
-- 迁移前自动备份
-- 迁移失败自动回滚（使用备份）
-- `user_version` pragma 追踪当前版本
-
-#### 依赖项管理
-
-| 策略 | 说明 |
-|------|------|
-| 版本锁定 | `pnpm-lock.yaml` 提交到 Git，确保可重复构建 |
-| 版本选择 | 主版本号锁定（如 `ccxt@^4.x`），安全补丁自动更新 |
-| 安全审计 | 每次 `pnpm install` 后运行 `pnpm audit`，CI 中强制 |
-| 关键依赖 | `better-sqlite3` / `ccxt` / `electron` 升级前需手动测试 |
-| 原生模块 | `better-sqlite3` 需要 `electron-rebuild`，在 `postinstall` 中处理 |
